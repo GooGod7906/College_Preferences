@@ -84,6 +84,11 @@ const FujianAdmission: React.FC<FujianAdmissionProps> = ({ collegeName }) => {
 
   const currentTab = tabs.find(t => t.id === activeTab);
 
+  // 特殊名称映射（学校改名等特殊情况）
+  const SPECIAL_NAME_MAP: Record<string, string[]> = {
+    '闽江大学': ['闽江学院'],
+  };
+
   // 查找当前大学在 PDF 中的页码
   const initialPage = useMemo(() => {
     if (!pageMapping || !currentTab) return 1;
@@ -96,6 +101,14 @@ const FujianAdmission: React.FC<FujianAdmissionProps> = ({ collegeName }) => {
       return pdfMapping[collegeName][0];
     }
 
+    // 检查特殊名称映射
+    const altNames = SPECIAL_NAME_MAP[collegeName] || [];
+    for (const altName of altNames) {
+      if (pdfMapping[altName]) {
+        return pdfMapping[altName][0];
+      }
+    }
+
     // 模糊匹配：查找包含大学名称的条目
     // 例如："闽江大学" 应该匹配 "闽江大学（中外合作）"
     const normalizedName = collegeName.replace(/[（(].*[)）]/, '').trim();
@@ -104,6 +117,17 @@ const FujianAdmission: React.FC<FujianAdmissionProps> = ({ collegeName }) => {
       const normalizedKey = key.replace(/[（(].*[)）]/, '').trim();
       if (normalizedKey === normalizedName || key.includes(normalizedName) || normalizedName.includes(normalizedKey)) {
         return pages[0];
+      }
+    }
+
+    // 模糊匹配特殊名称
+    for (const altName of altNames) {
+      const normalizedAlt = altName.replace(/[（(].*[)）]/, '').trim();
+      for (const [key, pages] of Object.entries(pdfMapping)) {
+        const normalizedKey = key.replace(/[（(].*[)）]/, '').trim();
+        if (normalizedKey === normalizedAlt || key.includes(normalizedAlt) || normalizedAlt.includes(normalizedKey)) {
+          return pages[0];
+        }
       }
     }
 

@@ -72,13 +72,13 @@ interface ScoreRecord {
 /**
  * 解析招生计划文本为表格数据
  */
-function parseAdmissionPlan(text: string, collegeName: string): PlanRecord[] {
+function parseAdmissionPlan(text: string, collegeName: string, defaultCollege?: string, defaultGroup?: string): PlanRecord[] {
   if (!text) return [];
 
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const records: PlanRecord[] = [];
-  let currentCollege = '';
-  let currentGroup = '';
+  let currentCollege = defaultCollege || '';
+  let currentGroup = defaultGroup || '';
 
   for (const line of lines) {
     // 识别大学名称
@@ -126,20 +126,72 @@ function parseAdmissionPlan(text: string, collegeName: string): PlanRecord[] {
     );
   });
 }
+// 特殊名称映射（学校改名等特殊情况）- 用于文本内容匹配
+const SPECIAL_NAME_MAP_FOR_TEXT: Record<string, string[]> = {
+  '闽江大学': ['闽江学院'],
+};
+
+/**
+ * 检查记录名称是否匹配目标大学名称（包含特殊名称映射）
+ */
+function matchesCollegeName(recordName: string, targetName: string): boolean {
+  const normalizedRecord = recordName.replace(/[（(].*[)）]/, '').trim();
+  const normalizedTarget = targetName.replace(/[（(].*[)）]/, '').trim();
+
+  // 直接匹配
+  if (
+    normalizedRecord === normalizedTarget ||
+    recordName.includes(normalizedTarget) ||
+    normalizedTarget.includes(normalizedRecord)
+  ) {
+    return true;
+  }
+
+  // 检查特殊名称映射
+  const altNames = SPECIAL_NAME_MAP_FOR_TEXT[targetName] || [];
+  for (const altName of altNames) {
+    const normalizedAlt = altName.replace(/[（(].*[)）]/, '').trim();
+    if (
+      normalizedRecord === normalizedAlt ||
+      recordName.includes(normalizedAlt) ||
+      normalizedAlt.includes(normalizedRecord)
+    ) {
+      return true;
+    }
+  }
+
+  // 反向检查：目标名称是否在特殊映射的值中
+  for (const [key, values] of Object.entries(SPECIAL_NAME_MAP_FOR_TEXT)) {
+    if (values.some(v => {
+      const nv = v.replace(/[（(].*[)）]/, '').trim();
+      return nv === normalizedRecord || recordName.includes(nv) || nv.includes(recordName);
+    })) {
+      // 记录名称匹配了某个特殊映射的值，检查目标名称是否是该映射的键
+      const normalizedKey = key.replace(/[（(].*[)）]/, '').trim();
+      if (normalizedTarget === normalizedKey || targetName.includes(normalizedKey) || normalizedKey.includes(targetName)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 
 /**
  * 解析分数线文本为表格数据
  * @param text 页面文本
  * @param collegeName 要筛选的大学名称
  * @param defaultCollege 默认大学名称（用于延续页面没有大学标题的情况）
+ * @param defaultGroup 默认选考科目（用于延续页面没有选考科目头的情况）
  */
-function parseScoreLine(text: string, collegeName: string, defaultCollege?: string): ScoreRecord[] {
+function parseScoreLine(text: string, collegeName: string, defaultCollege?: string, defaultGroup?: string): ScoreRecord[] {
   if (!text) return [];
 
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const records: ScoreRecord[] = [];
   let currentCollege = defaultCollege || '';
-  let currentGroup = '';
+  let currentGroup = defaultGroup || '';
 
   for (const line of lines) {
     // 识别大学名称（格式：700大学名称 或 大学名称）
@@ -203,16 +255,8 @@ function parseScoreLine(text: string, collegeName: string, defaultCollege?: stri
     }
   }
 
-  // 只返回与当前大学相关的记录
-  const normalizedName = collegeName.replace(/[（(].*[)）]/, '').trim();
-  return records.filter(r => {
-    const normalizedRecord = r.院校.replace(/[（(].*[)）]/, '').trim();
-    return (
-      normalizedRecord === normalizedName ||
-      r.院校.includes(normalizedName) ||
-      normalizedName.includes(normalizedRecord)
-    );
-  });
+  // 只返回与当前大学相关的记录（支持特殊名称映射）
+  return records.filter(r => matchesCollegeName(r.院校, collegeName));
 }
 
 const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, className = '', fullWidth = false }) => {
@@ -224,7 +268,6 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
-  const [currentScoreCollege, setCurrentScoreCollege] = useState<string>(''); // 跟踪分数线当前大学
   const tableRef = useRef<HTMLDivElement>(null);
 
   const currentConfig = PDF_CONFIGS.find(c => c.id === activeTab);
@@ -328,6 +371,7 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
   }, [pageMapping, currentConfig, collegeName]);
 
   // 解析当前页面的表格数据
+  // 跨页延续逻辑：根据 collegePages 列表确定前一页是否属于当前院校，避免可变 ref 导致的导航顺序依赖问题
   const tableData = useMemo(() => {
     if (!currentConfig) return null;
 
@@ -337,27 +381,53 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
     const text = texts[String(currentPage)];
     if (!text) return null;
 
+    // 确定性跨页延续：如果前一页也在当前院校的页码列表中，则延续院校名称
+    const prevPageInList = collegePages.includes(currentPage - 1);
+
     if (currentConfig.isPlan) {
-      return { type: 'plan' as const, data: parseAdmissionPlan(text, collegeName) };
-    } else {
-      // 对于分数线，提取当前页面的大学名称作为默认值
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      let pageCollege = '';
-      for (const line of lines) {
-        const collegeMatch = line.match(/^(?:\d{3})?\s*(.+?(?:大学|学院|学校)(?:\([^)]+\))?)\s*$/);
-        if (collegeMatch && line.length < 60 && !line.includes('录取') && !line.includes('分数')) {
-          pageCollege = collegeMatch[1].trim();
-          // 继续找，取最后一个
+      let defaultCollege = '';
+      let defaultGroup = '';
+
+      if (prevPageInList) {
+        defaultCollege = collegeName;
+        // 从前一页文本中获取最后出现的专业组
+        const prevText = texts[String(currentPage - 1)];
+        if (prevText) {
+          const prevLines = prevText.split('\n').map(l => l.trim()).filter(Boolean);
+          for (const line of prevLines) {
+            if (line.includes('专业组')) {
+              defaultGroup = line;
+            }
+          }
         }
       }
-      // 如果当前页没有大学名称，使用传入的collegeName或上一次的currentScoreCollege
-      const defaultCollege = pageCollege || currentScoreCollege || collegeName;
-      if (pageCollege) {
-        setCurrentScoreCollege(pageCollege);
+
+      const data = parseAdmissionPlan(text, collegeName, defaultCollege, defaultGroup);
+      return { type: 'plan' as const, data };
+    } else {
+      let defaultCollege = '';
+      let defaultGroup = '';
+
+      if (prevPageInList) {
+        defaultCollege = collegeName;
+        // 从前一页文本中获取最后出现的选考科目组
+        const prevText = texts[String(currentPage - 1)];
+        if (prevText) {
+          const prevLines = prevText.split('\n').map(l => l.trim()).filter(Boolean);
+          for (const line of prevLines) {
+            if (line.match(/^\d{3}\s+/) || line.includes('选考')) {
+              if (line.match(/^\d{3}\s+/)) {
+                defaultGroup = line;
+              }
+            }
+          }
+        }
       }
-      return { type: 'score' as const, data: parseScoreLine(text, collegeName, defaultCollege) };
+
+      const data = parseScoreLine(text, collegeName, defaultCollege, defaultGroup);
+      return { type: 'score' as const, data };
     }
-  }, [pageTexts, currentConfig, currentPage, collegeName, currentScoreCollege]);
+  }, [pageTexts, currentConfig, currentPage, collegeName, collegePages]);
 
   // 搜索功能
   const handleSearch = () => {
@@ -415,7 +485,6 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
     }
     setSearchResults([]);
     setSearchText('');
-    setCurrentScoreCollege(''); // 重置当前大学
   }, [activeTab, collegeName]); // Tab变化或学校变化时重置
 
   // 检查当前页面是否有数据
