@@ -1,0 +1,785 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+
+interface AdmissionDataViewerProps {
+  collegeName: string;
+  className?: string;
+  fullWidth?: boolean;
+}
+
+// PDF 文件配置
+const PDF_CONFIGS = [
+  {
+    id: 'plan-history' as const,
+    label: '历史组招生计划',
+    file: '2026招生计划（历史组）',
+    color: 'amber',
+    isPlan: true,
+  },
+  {
+    id: 'plan-physics' as const,
+    label: '物理组招生计划',
+    file: '2026招生计划（物理组）',
+    color: 'violet',
+    isPlan: true,
+  },
+  {
+    id: 'history' as const,
+    label: '历史组分数线',
+    file: '2023-2025福建分数线（历史组）',
+    color: 'blue',
+    isPlan: false,
+  },
+  {
+    id: 'physics' as const,
+    label: '物理组分数线',
+    file: '2023-2025福建分数线（物理组）',
+    color: 'teal',
+    isPlan: false,
+  },
+];
+
+type TabId = typeof PDF_CONFIGS[number]['id'];
+
+interface PlanRecord {
+  院校: string;
+  专业组: string;
+  专业代号: string;
+  专业名称: string;
+  学制: string;
+  计划人数: string;
+  收费标准: string;
+  备注: string;
+}
+
+interface ScoreRecord {
+  院校: string;
+  选考科目: string;
+  专业名称: string;
+  '2025_录取数': string;
+  '2025_最高分': string;
+  '2025_最低分': string;
+  '2025_平均分': string;
+  '2024_录取数': string;
+  '2024_最高分': string;
+  '2024_最低分': string;
+  '2024_平均分': string;
+  '2023_录取数': string;
+  '2023_最高分': string;
+  '2023_最低分': string;
+  '2023_平均分': string;
+}
+
+/**
+ * 解析招生计划文本为表格数据
+ */
+function parseAdmissionPlan(text: string, collegeName: string): PlanRecord[] {
+  if (!text) return [];
+
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const records: PlanRecord[] = [];
+  let currentCollege = '';
+  let currentGroup = '';
+
+  for (const line of lines) {
+    // 识别大学名称
+    if (
+      (line.includes('大学') || line.includes('学院') || line.includes('学校')) &&
+      line.length < 60 &&
+      !line.includes('招生') &&
+      !line.includes('专业组')
+    ) {
+      currentCollege = line.replace(/\s+\d+\s*$/, '').trim(); // 移除末尾的数字
+      continue;
+    }
+
+    // 识别专业组
+    if (line.includes('专业组')) {
+      currentGroup = line;
+      continue;
+    }
+
+    // 尝试解析专业数据行
+    // 格式：专业代号 专业名称 学制 计划人数 收费标准 [备注]
+    const match = line.match(/^(\d{3})\s+(.+?)\s+(四|三|五|二)\s+(\d+)\s+(\d+)(.*)/);
+    if (match && currentCollege) {
+      records.push({
+        院校: currentCollege,
+        专业组: currentGroup,
+        专业代号: match[1],
+        专业名称: match[2],
+        学制: match[3],
+        计划人数: match[4],
+        收费标准: match[5],
+        备注: match[6]?.trim() || '',
+      });
+    }
+  }
+
+  // 只返回与当前大学相关的记录
+  const normalizedName = collegeName.replace(/[（(].*[)）]/, '').trim();
+  return records.filter(r => {
+    const normalizedRecord = r.院校.replace(/[（(].*[)）]/, '').trim();
+    return (
+      normalizedRecord === normalizedName ||
+      r.院校.includes(normalizedName) ||
+      normalizedName.includes(normalizedRecord)
+    );
+  });
+}
+
+/**
+ * 解析分数线文本为表格数据
+ * @param text 页面文本
+ * @param collegeName 要筛选的大学名称
+ * @param defaultCollege 默认大学名称（用于延续页面没有大学标题的情况）
+ */
+function parseScoreLine(text: string, collegeName: string, defaultCollege?: string): ScoreRecord[] {
+  if (!text) return [];
+
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const records: ScoreRecord[] = [];
+  let currentCollege = defaultCollege || '';
+  let currentGroup = '';
+
+  for (const line of lines) {
+    // 识别大学名称（格式：700大学名称 或 大学名称）
+    const collegeMatch = line.match(/^(?:\d{3})?\s*(.+?(?:大学|学院|学校)(?:\([^)]+\))?)\s*$/);
+    if (collegeMatch && line.length < 60 && !line.includes('录取') && !line.includes('分数')) {
+      currentCollege = collegeMatch[1].trim();
+      continue;
+    }
+
+    // 识别选考科目组
+    if (line.match(/^\d{3}\s+/) || line.includes('选考')) {
+      if (line.match(/^\d{3}\s+/)) {
+        currentGroup = line;
+      }
+      continue;
+    }
+
+    // 尝试解析分数线数据行
+    // 格式：专业名称 录取数 最高分 最低分 平均分 ... (可能有多组年份数据)
+    const parts = line.split(/\s+/);
+    if (parts.length >= 4 && currentCollege) {
+      // 检查最后几个是否是数字（分数）
+      const lastParts = parts.slice(-12); // 最多12个数字字段（3年 x 4个指标）
+      const numbers = lastParts.filter(p => /^\d+$/.test(p));
+
+      if (numbers.length >= 4) {
+        // 找到专业名称的结束位置
+        let nameEnd = 0;
+        for (let i = 0; i < parts.length; i++) {
+          if (/^\d+$/.test(parts[i]) && i > 0) {
+            nameEnd = i;
+            break;
+          }
+        }
+
+        if (nameEnd > 0) {
+          const name = parts.slice(0, nameEnd).join(' ');
+          const nums = parts.slice(nameEnd);
+
+          const record: ScoreRecord = {
+            院校: currentCollege,
+            选考科目: currentGroup,
+            专业名称: name,
+            '2025_录取数': nums[0] || '',
+            '2025_最高分': nums[1] || '',
+            '2025_最低分': nums[2] || '',
+            '2025_平均分': nums[3] || '',
+            '2024_录取数': nums[4] || '',
+            '2024_最高分': nums[5] || '',
+            '2024_最低分': nums[6] || '',
+            '2024_平均分': nums[7] || '',
+            '2023_录取数': nums[8] || '',
+            '2023_最高分': nums[9] || '',
+            '2023_最低分': nums[10] || '',
+            '2023_平均分': nums[11] || '',
+          };
+
+          records.push(record);
+        }
+      }
+    }
+  }
+
+  // 只返回与当前大学相关的记录
+  const normalizedName = collegeName.replace(/[（(].*[)）]/, '').trim();
+  return records.filter(r => {
+    const normalizedRecord = r.院校.replace(/[（(].*[)）]/, '').trim();
+    return (
+      normalizedRecord === normalizedName ||
+      r.院校.includes(normalizedName) ||
+      normalizedName.includes(normalizedRecord)
+    );
+  });
+}
+
+const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, className = '', fullWidth = false }) => {
+  const [activeTab, setActiveTab] = useState<TabId>('plan-history');
+  const [pageMapping, setPageMapping] = useState<Record<string, Record<string, number[]>> | null>(null);
+  const [pageTexts, setPageTexts] = useState<Record<string, Record<string, string>>>({});
+  const [loading, setLoading] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searchText, setSearchText] = useState('');
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  const [currentScoreCollege, setCurrentScoreCollege] = useState<string>(''); // 跟踪分数线当前大学
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  const currentConfig = PDF_CONFIGS.find(c => c.id === activeTab);
+
+  // 加载页码映射
+  useEffect(() => {
+    const loadMapping = async () => {
+      try {
+        const response = await fetch('/data/fujian-pdf-pages.json');
+        if (response.ok) {
+          const data = await response.json();
+          setPageMapping(data);
+        }
+      } catch (err) {
+        console.error('加载页码映射失败:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadMapping();
+  }, []);
+
+  // 加载当前 PDF 的文本数据
+  useEffect(() => {
+    if (!currentConfig) return;
+
+    const loadTexts = async () => {
+      const cacheKey = currentConfig.file;
+      if (pageTexts[cacheKey]) return;
+
+      try {
+        const response = await fetch(`/data/fujian-pdf-texts-${cacheKey}.json`);
+        if (response.ok) {
+          const data = await response.json();
+          setPageTexts(prev => ({ ...prev, [cacheKey]: data }));
+        }
+      } catch (err) {
+        console.error('加载文本数据失败:', err);
+      }
+    };
+
+    loadTexts();
+  }, [currentConfig, pageTexts]);
+
+  // 特殊名称映射（学校改名等特殊情况）
+  const SPECIAL_NAME_MAP: Record<string, string[]> = {
+    '闽江大学': ['闽江学院'],
+  };
+
+  // 查找当前大学的页码
+  const collegePages = useMemo(() => {
+    if (!pageMapping || !currentConfig) return [];
+
+    const pdfMapping = pageMapping[`${currentConfig.file}.pdf`];
+    if (!pdfMapping) return [];
+
+    // 精确匹配
+    if (pdfMapping[collegeName]) {
+      return pdfMapping[collegeName];
+    }
+
+    // 检查特殊名称映射
+    const altNames = SPECIAL_NAME_MAP[collegeName] || [];
+    for (const altName of altNames) {
+      if (pdfMapping[altName]) {
+        return pdfMapping[altName];
+      }
+    }
+
+    // 模糊匹配
+    const normalizedName = collegeName.replace(/[（(].*[)）]/, '').trim();
+
+    for (const [key, pages] of Object.entries(pdfMapping)) {
+      const normalizedKey = key.replace(/[（(].*[)）]/, '').trim();
+      if (
+        normalizedKey === normalizedName ||
+        key.includes(normalizedName) ||
+        normalizedName.includes(normalizedKey)
+      ) {
+        return pages;
+      }
+    }
+
+    // 模糊匹配特殊名称
+    for (const altName of altNames) {
+      const normalizedAlt = altName.replace(/[（(].*[)）]/, '').trim();
+      for (const [key, pages] of Object.entries(pdfMapping)) {
+        const normalizedKey = key.replace(/[（(].*[)）]/, '').trim();
+        if (
+          normalizedKey === normalizedAlt ||
+          key.includes(normalizedAlt) ||
+          normalizedAlt.includes(normalizedKey)
+        ) {
+          return pages;
+        }
+      }
+    }
+
+    return [];
+  }, [pageMapping, currentConfig, collegeName]);
+
+  // 解析当前页面的表格数据
+  const tableData = useMemo(() => {
+    if (!currentConfig) return null;
+
+    const texts = pageTexts[currentConfig.file];
+    if (!texts) return null;
+
+    const text = texts[String(currentPage)];
+    if (!text) return null;
+
+    if (currentConfig.isPlan) {
+      return { type: 'plan' as const, data: parseAdmissionPlan(text, collegeName) };
+    } else {
+      // 对于分数线，提取当前页面的大学名称作为默认值
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      let pageCollege = '';
+      for (const line of lines) {
+        const collegeMatch = line.match(/^(?:\d{3})?\s*(.+?(?:大学|学院|学校)(?:\([^)]+\))?)\s*$/);
+        if (collegeMatch && line.length < 60 && !line.includes('录取') && !line.includes('分数')) {
+          pageCollege = collegeMatch[1].trim();
+          // 继续找，取最后一个
+        }
+      }
+      // 如果当前页没有大学名称，使用传入的collegeName或上一次的currentScoreCollege
+      const defaultCollege = pageCollege || currentScoreCollege || collegeName;
+      if (pageCollege) {
+        setCurrentScoreCollege(pageCollege);
+      }
+      return { type: 'score' as const, data: parseScoreLine(text, collegeName, defaultCollege) };
+    }
+  }, [pageTexts, currentConfig, currentPage, collegeName, currentScoreCollege]);
+
+  // 搜索功能
+  const handleSearch = () => {
+    if (!searchText.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    if (!pageMapping || !currentConfig) return;
+
+    const pdfMapping = pageMapping[`${currentConfig.file}.pdf`];
+    if (!pdfMapping) return;
+
+    const results: number[] = [];
+    const searchLower = searchText.toLowerCase();
+
+    for (const [key, pages] of Object.entries(pdfMapping)) {
+      if (key.toLowerCase().includes(searchLower)) {
+        results.push(...pages);
+      }
+    }
+
+    const uniqueResults = [...new Set(results)].sort((a, b) => a - b);
+    setSearchResults(uniqueResults);
+    setCurrentSearchIndex(0);
+
+    if (uniqueResults.length > 0) {
+      setCurrentPage(uniqueResults[0]);
+    }
+  };
+
+  // 跳转到下一个/上一个搜索结果
+  const goToNextSearchResult = () => {
+    if (searchResults.length > 0) {
+      const nextIndex = (currentSearchIndex + 1) % searchResults.length;
+      setCurrentSearchIndex(nextIndex);
+      setCurrentPage(searchResults[nextIndex]);
+    }
+  };
+
+  const goToPrevSearchResult = () => {
+    if (searchResults.length > 0) {
+      const prevIndex = (currentSearchIndex - 1 + searchResults.length) % searchResults.length;
+      setCurrentSearchIndex(prevIndex);
+      setCurrentPage(searchResults[prevIndex]);
+    }
+  };
+
+  // 切换 Tab 或学校时重置页码
+  useEffect(() => {
+    if (collegePages.length > 0) {
+      setCurrentPage(collegePages[0]);
+    } else {
+      setCurrentPage(1);
+    }
+    setSearchResults([]);
+    setSearchText('');
+    setCurrentScoreCollege(''); // 重置当前大学
+  }, [activeTab, collegeName]); // Tab变化或学校变化时重置
+
+  // 检查当前页面是否有数据
+  const hasData = useMemo(() => {
+    if (!tableData) return false;
+    if (tableData.type === 'plan') {
+      return (tableData.data as PlanRecord[]).length > 0;
+    } else {
+      return (tableData.data as ScoreRecord[]).length > 0;
+    }
+  }, [tableData]);
+
+  // 如果当前页面没有数据，自动跳转到下一个有数据的页面
+  useEffect(() => {
+    if (!hasData && collegePages.length > 0) {
+      const currentIndex = collegePages.indexOf(currentPage);
+      if (currentIndex >= 0 && currentIndex < collegePages.length - 1) {
+        setCurrentPage(collegePages[currentIndex + 1]);
+      } else if (currentIndex === -1) {
+        setCurrentPage(collegePages[0]);
+      }
+    }
+  }, [hasData, collegePages, currentPage]);
+
+  const colorClasses: Record<string, { active: string; inactive: string }> = {
+    blue: {
+      active: 'bg-blue-600 text-white shadow-md shadow-blue-200',
+      inactive: 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200',
+    },
+    teal: {
+      active: 'bg-teal-600 text-white shadow-md shadow-teal-200',
+      inactive: 'bg-teal-50 text-teal-700 hover:bg-teal-100 border border-teal-200',
+    },
+    amber: {
+      active: 'bg-amber-600 text-white shadow-md shadow-amber-200',
+      inactive: 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200',
+    },
+    violet: {
+      active: 'bg-violet-600 text-white shadow-md shadow-violet-200',
+      inactive: 'bg-violet-50 text-violet-700 hover:bg-violet-100 border border-violet-200',
+    },
+  };
+
+  // 获取总页数
+  const totalPages = useMemo(() => {
+    if (!pageMapping || !currentConfig) return 0;
+    const pdfMapping = pageMapping[`${currentConfig.file}.pdf`];
+    if (!pdfMapping) return 0;
+    return Math.max(...Object.values(pdfMapping).flat());
+  }, [pageMapping, currentConfig]);
+
+  if (loading) {
+    return (
+      <div className={`bg-white rounded-xl border border-gray-100 p-4 ${className}`}>
+        <div className="flex items-center justify-center h-40">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+      </div>
+    );
+  }
+
+  // 渲染招生计划表格
+  const renderPlanTable = (data: PlanRecord[]) => {
+    if (data.length === 0) {
+      return (
+        <div className="text-center text-gray-500 py-8">
+          <p>当前页面未找到 {collegeName} 的招生计划数据</p>
+          <p className="text-xs mt-2">尝试使用页码导航查看其他页面</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="bg-gray-100">
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">专业组</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">专业代号</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">专业名称</th>
+              <th className="px-3 py-2 text-center font-medium text-gray-700 whitespace-nowrap">学制</th>
+              <th className="px-3 py-2 text-right font-medium text-gray-700 whitespace-nowrap">计划人数</th>
+              <th className="px-3 py-2 text-right font-medium text-gray-700 whitespace-nowrap">收费标准</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((record, index) => (
+              <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap" title={record.专业组}>{record.专业组 || '-'}</td>
+                <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{record.专业代号}</td>
+                <td className="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">{record.专业名称}</td>
+                <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{record.学制}</td>
+                <td className="px-3 py-2 text-right text-gray-800 whitespace-nowrap">{record.计划人数}</td>
+                <td className="px-3 py-2 text-right text-gray-800 whitespace-nowrap">{record.收费标准}</td>
+                <td className="px-3 py-2 text-gray-500 text-xs max-w-[200px] truncate" title={record.备注}>{record.备注}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  // 渲染分数线表格
+  const renderScoreTable = (data: ScoreRecord[]) => {
+    if (data.length === 0) {
+      return (
+        <div className="text-center text-gray-500 py-8">
+          <p>当前页面未找到 {collegeName} 的分数线数据</p>
+          <p className="text-xs mt-2">尝试使用页码导航查看其他页面</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="bg-gray-100">
+              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-0 bg-gray-100 z-10 whitespace-nowrap">院校</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-[80px] bg-gray-100 z-10 whitespace-nowrap">选考科目</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-[200px] bg-gray-100 z-10 whitespace-nowrap">专业名称</th>
+              <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2025年</th>
+              <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2024年</th>
+              <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2023年</th>
+            </tr>
+            <tr className="bg-gray-50">
+              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-10 whitespace-nowrap"></th>
+              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-[80px] bg-gray-50 z-10 whitespace-nowrap"></th>
+              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-[200px] bg-gray-50 z-10 whitespace-nowrap"></th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">录取数</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最高分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最低分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">平均分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">录取数</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最高分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最低分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">平均分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">录取数</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最高分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最低分</th>
+              <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">平均分</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((record, index) => (
+              <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="px-3 py-2 text-gray-500 text-xs sticky left-0 bg-white z-10 whitespace-nowrap">{record.院校}</td>
+                <td className="px-3 py-2 text-gray-500 text-xs sticky left-[80px] bg-white z-10 whitespace-nowrap" title={record.选考科目}>{record.选考科目 || '-'}</td>
+                <td className="px-3 py-2 font-medium text-gray-800 sticky left-[200px] bg-white z-10 whitespace-nowrap">{record.专业名称}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_录取数']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_最高分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_最低分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_平均分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2024_录取数']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2024_最高分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2024_最低分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2024_平均分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2023_录取数']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2023_最高分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2023_最低分']}</td>
+                <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2023_平均分']}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  return (
+    <div className={`bg-white rounded-xl border border-gray-100 overflow-hidden mb-3 ${className}`}>
+      <div className="p-4">
+        {/* 标题 */}
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-orange-600">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </span>
+          <h3 className="text-sm font-semibold text-gray-800">福建录取情况</h3>
+        </div>
+
+        <p className="text-xs text-gray-500 mb-3">
+          {collegeName} 在福建的录取数据
+        </p>
+
+        {/* 标签页 */}
+        <div className="flex flex-wrap gap-2 mb-4">
+          {PDF_CONFIGS.map(config => {
+            const isActive = activeTab === config.id;
+            const colors = colorClasses[config.color] || colorClasses.blue;
+            return (
+              <button
+                key={config.id}
+                onClick={() => setActiveTab(config.id)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                  isActive ? colors.active : colors.inactive
+                }`}
+              >
+                {config.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 工具栏 */}
+        <div className="bg-gray-50 rounded-xl p-3 mb-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            {/* 页码控制 */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (collegePages.length > 0) {
+                    const currentIndex = collegePages.indexOf(currentPage);
+                    if (currentIndex > 0) {
+                      setCurrentPage(collegePages[currentIndex - 1]);
+                    } else {
+                      setCurrentPage(collegePages[collegePages.length - 1]);
+                    }
+                  }
+                }}
+                className="px-3 py-1.5 bg-white hover:bg-gray-100 rounded text-sm border border-gray-200"
+              >
+                ‹
+              </button>
+              <span className="text-sm text-gray-700">
+                <span className="font-medium">{currentPage}</span>
+                <span className="mx-1">/</span>
+                <span>{collegePages.length > 0 ? collegePages[collegePages.length - 1] : totalPages}</span>
+              </span>
+              <button
+                onClick={() => {
+                  if (collegePages.length > 0) {
+                    const currentIndex = collegePages.indexOf(currentPage);
+                    if (currentIndex < collegePages.length - 1) {
+                      setCurrentPage(collegePages[currentIndex + 1]);
+                    } else {
+                      setCurrentPage(collegePages[0]);
+                    }
+                  }
+                }}
+                className="px-3 py-1.5 bg-white hover:bg-gray-100 rounded text-sm border border-gray-200"
+              >
+                ›
+              </button>
+            </div>
+
+            {/* 搜索框 */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="搜索大学名称..."
+                className="px-3 py-1.5 border border-gray-300 rounded text-sm w-40"
+              />
+              <button
+                onClick={handleSearch}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+              >
+                搜索
+              </button>
+              {searchResults.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={goToPrevSearchResult}
+                    className="px-2 py-1.5 bg-white hover:bg-gray-100 rounded text-sm border border-gray-200"
+                  >
+                    ‹
+                  </button>
+                  <span className="text-xs text-gray-600">
+                    {currentSearchIndex + 1}/{searchResults.length}
+                  </span>
+                  <button
+                    onClick={goToNextSearchResult}
+                    className="px-2 py-1.5 bg-white hover:bg-gray-100 rounded text-sm border border-gray-200"
+                  >
+                    ›
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 页码快速跳转 */}
+            {collegePages.length > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500">相关:</span>
+                {collegePages.slice(0, 5).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => setCurrentPage(page)}
+                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                      currentPage === page
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
+                    }`}
+                  >
+                    {page}
+                  </button>
+                ))}
+                {collegePages.length > 5 && (
+                  <span className="text-xs text-gray-500">...</span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 表格内容展示 */}
+        <div ref={tableRef} className={`bg-white rounded-xl border border-gray-200 overflow-hidden ${fullWidth ? 'max-h-[70vh]' : 'max-h-[50vh]'} overflow-y-auto`}>
+          {loading ? (
+            <div className="text-center text-gray-500 py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+              <p>加载中...</p>
+            </div>
+          ) : tableData ? (
+            tableData.type === 'plan' ? (
+              renderPlanTable(tableData.data as PlanRecord[])
+            ) : (
+              renderScoreTable(tableData.data as ScoreRecord[])
+            )
+          ) : (
+            <div className="text-center text-gray-500 py-8">
+              <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <p>当前页面未找到 {collegeName} 的数据</p>
+              <p className="text-xs mt-2">尝试使用页码导航查看其他页面</p>
+            </div>
+          )}
+        </div>
+
+        {/* 底部信息 */}
+        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
+          <p className="text-xs text-gray-500">
+            {currentConfig?.file}.pdf - 第 {currentPage} 页
+            {collegePages.length > 0 && (
+              <span className="ml-2 text-blue-500">
+                (相关页码: {collegePages[0]}-{collegePages[collegePages.length - 1]})
+              </span>
+            )}
+          </p>
+          <a
+            href={`/fujian-pdfs/${currentConfig?.file}.pdf`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition-colors"
+            title="在新标签页打开原始PDF，用于对照验证"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            查看原PDF
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AdmissionDataViewer;
