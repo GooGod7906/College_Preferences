@@ -52,7 +52,7 @@ const InfoItem: React.FC<{ label: string; value: string | null }> = ({ label, va
 
 const CollegeDetailPage: React.FC<CollegeDetailPageProps> = ({ college, onBack }) => {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex flex-col">
       {/* 顶部导航 */}
       <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-40">
         <div className="max-w-[1400px] mx-auto px-4 py-3">
@@ -89,7 +89,7 @@ const CollegeDetailPage: React.FC<CollegeDetailPageProps> = ({ college, onBack }
       </header>
 
       {/* 主内容 */}
-      <main className="max-w-[1400px] mx-auto px-4 py-6">
+      <main className="max-w-[1400px] mx-auto px-4 py-6 flex-1">
         {/* 基本信息卡片 */}
         <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
           <div className="flex items-center gap-2 mb-3">

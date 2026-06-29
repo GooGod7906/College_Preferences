@@ -13,9 +13,11 @@ interface PdfViewerProps {
   url: string;
   initialPage?: number;
   className?: string;
+  controlledPage?: number;
+  onPageChange?: (page: number) => void;
 }
 
-const PdfViewer: React.FC<PdfViewerProps> = ({ url, initialPage = 1, className = '' }) => {
+const PdfViewer: React.FC<PdfViewerProps> = ({ url, initialPage = 1, className = '', controlledPage, onPageChange }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,8 +107,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ url, initialPage = 1, className =
   const goToPage = (pageNum: number) => {
     if (pageNum >= 1 && pageNum <= totalPages) {
       setCurrentPage(pageNum);
+      onPageChange?.(pageNum);
     }
   };
+
+  // 外部控制页码
+  useEffect(() => {
+    if (controlledPage && controlledPage !== currentPage && controlledPage >= 1 && controlledPage <= totalPages) {
+      setCurrentPage(controlledPage);
+    }
+  }, [controlledPage]);
 
   // 搜索功能
   const handleSearch = async () => {

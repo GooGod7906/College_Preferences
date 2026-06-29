@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import PdfViewer from './PdfViewer';
 
 interface AdmissionDataViewerProps {
   collegeName: string;
@@ -270,6 +271,13 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
   const tableRef = useRef<HTMLDivElement>(null);
 
+  // PDF 内嵌查看器状态
+  const [showPdfViewer, setShowPdfViewer] = useState(false);
+  const [pdfViewerPage, setPdfViewerPage] = useState(1);
+  const [pdfSearchText, setPdfSearchText] = useState('');
+  const [pdfSearchResults, setPdfSearchResults] = useState<number[]>([]);
+  const [pdfSearchIndex, setPdfSearchIndex] = useState(0);
+
   const currentConfig = PDF_CONFIGS.find(c => c.id === activeTab);
 
   // 加载页码映射
@@ -487,6 +495,62 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
     setSearchText('');
   }, [activeTab, collegeName]); // Tab变化或学校变化时重置
 
+  // 打开 PDF 查看器时跳转到当前学校页面
+  useEffect(() => {
+    if (showPdfViewer && currentConfig) {
+      const firstPage = collegePages.length > 0 ? collegePages[0] : 1;
+      setPdfViewerPage(firstPage);
+      setPdfSearchText('');
+      setPdfSearchResults([]);
+      setPdfSearchIndex(0);
+    }
+  }, [showPdfViewer]);
+
+  // PDF 查看器内搜索功能（按大学名称搜索页码映射）
+  const handlePdfSearch = () => {
+    if (!pdfSearchText.trim()) {
+      setPdfSearchResults([]);
+      return;
+    }
+    if (!pageMapping || !currentConfig) return;
+
+    const pdfMapping = pageMapping[`${currentConfig.file}.pdf`];
+    if (!pdfMapping) return;
+
+    const results: number[] = [];
+    const searchLower = pdfSearchText.toLowerCase();
+
+    for (const [key, pages] of Object.entries(pdfMapping)) {
+      if (key.toLowerCase().includes(searchLower)) {
+        results.push(...pages);
+      }
+    }
+
+    const uniqueResults = [...new Set(results)].sort((a, b) => a - b);
+    setPdfSearchResults(uniqueResults);
+    setPdfSearchIndex(0);
+
+    if (uniqueResults.length > 0) {
+      setPdfViewerPage(uniqueResults[0]);
+    }
+  };
+
+  const goToNextPdfSearchResult = () => {
+    if (pdfSearchResults.length > 0) {
+      const nextIndex = (pdfSearchIndex + 1) % pdfSearchResults.length;
+      setPdfSearchIndex(nextIndex);
+      setPdfViewerPage(pdfSearchResults[nextIndex]);
+    }
+  };
+
+  const goToPrevPdfSearchResult = () => {
+    if (pdfSearchResults.length > 0) {
+      const prevIndex = (pdfSearchIndex - 1 + pdfSearchResults.length) % pdfSearchResults.length;
+      setPdfSearchIndex(prevIndex);
+      setPdfViewerPage(pdfSearchResults[prevIndex]);
+    }
+  };
+
   // 检查当前页面是否有数据
   const hasData = useMemo(() => {
     if (!tableData) return false;
@@ -605,17 +669,17 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
         <table className="min-w-full text-sm">
           <thead>
             <tr className="bg-gray-100">
-              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-0 bg-gray-100 z-10 whitespace-nowrap">院校</th>
-              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-[80px] bg-gray-100 z-10 whitespace-nowrap">选考科目</th>
-              <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-[200px] bg-gray-100 z-10 whitespace-nowrap">专业名称</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">院校</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">选考科目</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700 whitespace-nowrap">专业名称</th>
               <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2025年</th>
               <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2024年</th>
               <th className="px-2 py-2 text-center font-medium text-gray-700 whitespace-nowrap" colSpan={4}>2023年</th>
             </tr>
             <tr className="bg-gray-50">
-              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-10 whitespace-nowrap"></th>
-              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-[80px] bg-gray-50 z-10 whitespace-nowrap"></th>
-              <th className="px-3 py-1 text-left font-medium text-gray-600 sticky left-[200px] bg-gray-50 z-10 whitespace-nowrap"></th>
+              <th className="px-3 py-1 text-left font-medium text-gray-600 whitespace-nowrap"></th>
+              <th className="px-3 py-1 text-left font-medium text-gray-600 whitespace-nowrap"></th>
+              <th className="px-3 py-1 text-left font-medium text-gray-600 whitespace-nowrap"></th>
               <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">录取数</th>
               <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最高分</th>
               <th className="px-2 py-1 text-right font-medium text-gray-600 text-xs whitespace-nowrap">最低分</th>
@@ -633,9 +697,9 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
           <tbody>
             {data.map((record, index) => (
               <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="px-3 py-2 text-gray-500 text-xs sticky left-0 bg-white z-10 whitespace-nowrap">{record.院校}</td>
-                <td className="px-3 py-2 text-gray-500 text-xs sticky left-[80px] bg-white z-10 whitespace-nowrap" title={record.选考科目}>{record.选考科目 || '-'}</td>
-                <td className="px-3 py-2 font-medium text-gray-800 sticky left-[200px] bg-white z-10 whitespace-nowrap">{record.专业名称}</td>
+                <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">{record.院校}</td>
+                <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap" title={record.选考科目}>{record.选考科目 || '-'}</td>
+                <td className="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">{record.专业名称}</td>
                 <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_录取数']}</td>
                 <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_最高分']}</td>
                 <td className="px-2 py-2 text-right text-gray-700 whitespace-nowrap">{record['2025_最低分']}</td>
@@ -657,6 +721,7 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
   };
 
   return (
+    <>
     <div className={`bg-white rounded-xl border border-gray-100 overflow-hidden mb-3 ${className}`}>
       <div className="p-4">
         {/* 标题 */}
@@ -672,6 +737,16 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
         <p className="text-xs text-gray-500 mb-3">
           {collegeName} 在福建的录取数据
         </p>
+
+        {/* AI 数据提示 */}
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 flex items-start gap-2">
+          <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+          <p className="text-xs text-amber-700 leading-relaxed">
+            <span className="font-semibold">⚠ 以下数据由 AI 自动读取，可能存在偏差</span>，请务必点击下方「查看原PDF」对照原始文件核实。
+          </p>
+        </div>
 
         {/* 标签页 */}
         <div className="flex flex-wrap gap-2 mb-4">
@@ -830,24 +905,95 @@ const AdmissionDataViewer: React.FC<AdmissionDataViewerProps> = ({ collegeName, 
               </span>
             )}
           </p>
-          <a
-            href={`/fujian-pdfs/${currentConfig?.file}.pdf`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition-colors"
-            title="在新标签页打开原始PDF，用于对照验证"
+          <button
+            onClick={() => setShowPdfViewer(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
+            title="嵌入式查看原始PDF，自动跳转到该校页面"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
             查看原PDF
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </a>
+          </button>
         </div>
       </div>
     </div>
+
+    {/* PDF 内嵌查看器弹窗 */}
+    {showPdfViewer && currentConfig && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowPdfViewer(false)}>
+        <div className="bg-white rounded-2xl shadow-2xl w-[95vw] max-w-5xl h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+          {/* 弹窗头部 */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50">
+            <div className="flex items-center gap-2">
+              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span className="text-sm font-semibold text-gray-800">{currentConfig.file}.pdf</span>
+              <span className="text-xs text-gray-500">— 已跳转至 {collegeName}</span>
+            </div>
+
+            {/* 搜索框 */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={pdfSearchText}
+                onChange={(e) => setPdfSearchText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handlePdfSearch()}
+                placeholder="搜索大学名称..."
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm w-44 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <button
+                onClick={handlePdfSearch}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
+              >
+                搜索
+              </button>
+              {pdfSearchResults.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={goToPrevPdfSearchResult}
+                    className="px-2 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm"
+                  >
+                    ‹
+                  </button>
+                  <span className="text-xs text-gray-600 whitespace-nowrap">
+                    {pdfSearchIndex + 1}/{pdfSearchResults.length}
+                  </span>
+                  <button
+                    onClick={goToNextPdfSearchResult}
+                    className="px-2 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm"
+                  >
+                    ›
+                  </button>
+                </div>
+              )}
+              <button
+                onClick={() => setShowPdfViewer(false)}
+                className="ml-2 px-2 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                title="关闭"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* PDF 渲染区域 */}
+          <div className="flex-1 overflow-hidden">
+            <PdfViewer
+              url={`/fujian-pdfs/${currentConfig.file}.pdf`}
+              initialPage={collegePages.length > 0 ? collegePages[0] : 1}
+              controlledPage={pdfViewerPage}
+              onPageChange={setPdfViewerPage}
+              className="h-full"
+            />
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

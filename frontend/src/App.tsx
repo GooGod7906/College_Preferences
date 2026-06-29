@@ -84,7 +84,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex flex-col">
       {/* 头部 */}
       <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4">
@@ -108,7 +108,7 @@ function App() {
       </header>
 
       {/* 主内容 */}
-      <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">
+      <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6 flex-1">
         <div className="flex flex-col lg:flex-row gap-4 sm:gap-6">
           {/* 左侧筛选面板 - 桌面端固定 */}
           <div className="lg:w-80 flex-shrink-0">
